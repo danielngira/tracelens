@@ -150,6 +150,20 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 const port = Number(process.env.PORT ?? 4000);
 
 async function startServer() {
+  let databaseReady = false;
+  let lastDatabaseError: unknown;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await pool.query('SELECT 1');
+      databaseReady = true;
+      break;
+    } catch (error) {
+      lastDatabaseError = error;
+      if (attempt < 19) await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+  if (!databaseReady) throw lastDatabaseError;
+
   await pool.query(`CREATE TABLE IF NOT EXISTS test_runs (
     id bigserial PRIMARY KEY,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -174,6 +188,11 @@ async function startServer() {
 }
 
 startServer().catch(error => {
-  console.error('[TraceLens] Could not initialize database schema:', error);
-  process.exitCode = 1;
+  const failure = error as NodeJS.ErrnoException;
+  if (failure.code === 'ECONNREFUSED') {
+    console.error('[TraceLens] PostgreSQL is not reachable on port 5432. Run `docker compose up -d db`, then retry `npm run dev`.');
+  } else {
+    console.error('[TraceLens] Could not initialize database schema:', error);
+  }
+  void pool.end().finally(() => { process.exitCode = 1; });
 });
