@@ -101,13 +101,14 @@ app.post('/api/runs', async (req, res, next) => {
   if (testRunning) return res.status(409).json({ error: 'A test is already running.' });
 
   testRunning = true;
-  const directory = await mkdtemp(join(tmpdir(), 'tracelens-'));
-  const outputPath = join(directory, 'samples.json');
+  let directory: string | undefined;
   try {
+    directory = await mkdtemp(join(tmpdir(), 'tracelens-'));
+    const outputPath = join(directory, 'samples.json');
     await execFileAsync('k6', [
       'run', '--quiet', `--vus=${virtualUsers}`, `--duration=${durationSeconds}s`,
       `--out=json=${outputPath}`, join(process.cwd(), 'load/product-lookup.js'),
-    ], { env: { ...process.env, TARGET_URL: 'http://127.0.0.1:4000' }, timeout: (durationSeconds + 30) * 1000, maxBuffer: 1024 * 1024 });
+    ], { env: { ...process.env, TARGET_URL: process.env.TARGET_URL ?? `http://127.0.0.1:${port}` }, timeout: (durationSeconds + 30) * 1000, maxBuffer: 1024 * 1024 });
     const text = await readFile(outputPath, 'utf8');
     const records = text.split('\n').filter(Boolean).map(line => JSON.parse(line) as { metric: string; data: { time: string; value: number } });
     const requests = new Map<string, { time: number; durationMs?: number; failed?: boolean }>();
@@ -128,17 +129,51 @@ app.post('/api/runs', async (req, res, next) => {
     );
     res.status(201).json(saved.rows[0]);
   } catch (error) {
-    next(error);
+    console.error('[TraceLens] test run failed:', error);
+    const failure = error as NodeJS.ErrnoException & { stderr?: string };
+    const detail = failure.code === 'ENOENT'
+      ? 'The k6 executable is missing from the API container. Rebuild the stack with `docker compose up --build`.'
+      : (failure.stderr?.trim().split('\n').slice(-4).join(' ') || failure.message || 'Unknown runner error');
+    if (!res.headersSent) res.status(failure.code === 'ENOENT' ? 503 : 502).json({ error: 'Test run failed', details: detail });
   } finally {
     testRunning = false;
-    await rm(directory, { recursive: true, force: true });
+    if (directory) await rm(directory, { recursive: true, force: true });
   }
 });
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(error);
-  res.status(500).json({ error: 'Internal server error' });
+  const detail = error instanceof Error ? error.message : 'Unknown API error';
+  res.status(500).json({ error: 'Internal server error', details: process.env.NODE_ENV === 'production' ? undefined : detail });
 });
 
 const port = Number(process.env.PORT ?? 4000);
-app.listen(port, () => console.log(`TraceLens API listening on :${port}`));
+
+async function startServer() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS test_runs (
+    id bigserial PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    scenario text NOT NULL,
+    virtual_users integer NOT NULL,
+    duration_seconds integer NOT NULL,
+    pool_size integer NOT NULL DEFAULT 10,
+    summary jsonb NOT NULL,
+    series jsonb NOT NULL
+  )`);
+  await pool.query('ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS pool_size integer NOT NULL DEFAULT 10');
+  const server = app.listen(port, () => console.log(`TraceLens API listening on :${port}`));
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`[TraceLens] Port ${port} is already in use. Find the process with ` +
+        '`lsof -nP -iTCP:' + `${port}` + ' -sTCP:LISTEN`, stop it, or start TraceLens on another port with `PORT=4001 npm run dev`.');
+    } else {
+      console.error('[TraceLens] Could not start API server:', error);
+    }
+    void pool.end().finally(() => { process.exitCode = 1; });
+  });
+}
+
+startServer().catch(error => {
+  console.error('[TraceLens] Could not initialize database schema:', error);
+  process.exitCode = 1;
+});
