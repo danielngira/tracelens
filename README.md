@@ -40,6 +40,7 @@ For the preferred local workflow, keep Node on your Mac and run PostgreSQL in Do
 
 ```sh
 npm install
+brew install k6      # macOS only; the native API uses the host k6 executable
 npm run dev       # starts PostgreSQL in Docker, then the API on port 4000
 npm run dev:web   # dashboard in a second terminal
 npm test          # API unit tests
