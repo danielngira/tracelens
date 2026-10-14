@@ -18,7 +18,7 @@ Open <http://localhost:5173>. The API health check is at <http://localhost:4000/
 - **api**: TypeScript + Express service, with request and database-pool measurements
 - **db**: PostgreSQL 16 with generated sample products
 
-The API exposes `GET /api/products/:code` as the sample database-backed endpoint. `GET /api/metrics` reports current in-flight API requests, pool usage, and recent query timing. The dashboard starts a k6 run against that endpoint and saves summary and per-second time-series measurements in PostgreSQL. The supported database setting is the connection-pool maximum (1–50); test runs accept 1–100 virtual users and durations of 5–120 seconds.
+The API exposes `GET /api/products/:code` as the sample database-backed endpoint. `GET /api/metrics` reports current in-flight API requests, pool usage, and recent query timing. The dashboard starts a k6 run against that endpoint and saves summary and per-second time-series measurements in PostgreSQL. The API streams k6's detailed output instead of loading the entire file into memory; k6 supplies the overall p50, p95, and p99 values, while chart percentiles use a bounded per-second sample. The supported database setting is the connection-pool maximum (1–50); test runs accept 1–100 virtual users and durations of 5–120 seconds.
 
 ## Metrics
 
