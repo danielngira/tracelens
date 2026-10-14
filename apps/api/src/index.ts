@@ -132,7 +132,7 @@ app.post('/api/runs', async (req, res, next) => {
     console.error('[TraceLens] test run failed:', error);
     const failure = error as NodeJS.ErrnoException & { stderr?: string };
     const detail = failure.code === 'ENOENT'
-      ? 'The k6 executable is missing from the API container. Rebuild the stack with `docker compose up --build`.'
+      ? 'k6 is not installed for this API process. On macOS, run `brew install k6`; or run the full Docker stack with `docker compose up --build` to use the bundled k6 executable.'
       : (failure.stderr?.trim().split('\n').slice(-4).join(' ') || failure.message || 'Unknown runner error');
     if (!res.headersSent) res.status(failure.code === 'ENOENT' ? 503 : 502).json({ error: 'Test run failed', details: detail });
   } finally {
