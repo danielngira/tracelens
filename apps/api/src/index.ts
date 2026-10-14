@@ -1,13 +1,15 @@
 import cors from 'cors';
 import { execFile } from 'node:child_process';
+import { createReadStream } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import express from 'express';
 import { Pool } from 'pg';
 import { Metrics } from './metrics.js';
-import { summarizeRun, type Sample } from './runResults.js';
+import { RunAccumulator, type K6Summary } from './runResults.js';
 
 const app = express();
 const pool = new Pool({
@@ -105,24 +107,21 @@ app.post('/api/runs', async (req, res, next) => {
   try {
     directory = await mkdtemp(join(tmpdir(), 'tracelens-'));
     const outputPath = join(directory, 'samples.json');
+    const summaryPath = join(directory, 'summary.json');
     await execFileAsync('k6', [
       'run', '--quiet', `--vus=${virtualUsers}`, `--duration=${durationSeconds}s`,
-      `--out=json=${outputPath}`, join(process.cwd(), 'load/product-lookup.js'),
+      `--out=json=${outputPath}`, `--summary-export=${summaryPath}`,
+      '--summary-trend-stats=med,p(95),p(99)', join(process.cwd(), 'load/product-lookup.js'),
     ], { env: { ...process.env, TARGET_URL: process.env.TARGET_URL ?? `http://127.0.0.1:${port}` }, timeout: (durationSeconds + 30) * 1000, maxBuffer: 1024 * 1024 });
-    const text = await readFile(outputPath, 'utf8');
-    const records = text.split('\n').filter(Boolean).map(line => JSON.parse(line) as { metric: string; data: { time: string; value: number } });
-    const requests = new Map<string, { time: number; durationMs?: number; failed?: boolean }>();
-    for (const record of records) {
-      const key = record.data.time;
-      const entry = requests.get(key) ?? { time: Date.parse(key) };
-      if (record.metric === 'http_req_duration') entry.durationMs = record.data.value;
-      if (record.metric === 'http_req_failed') entry.failed = record.data.value > 0;
-      requests.set(key, entry);
+    const accumulator = new RunAccumulator();
+    const lines = createInterface({ input: createReadStream(outputPath, { encoding: 'utf8' }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!line) continue;
+      const record = JSON.parse(line) as { metric: string; data: { time: string; value: number } };
+      accumulator.add(record.metric, record.data.time, record.data.value);
     }
-    const complete = [...requests.values()].filter((sample): sample is { time: number; durationMs: number; failed: boolean } => sample.durationMs !== undefined);
-    const start = complete[0]?.time ?? Date.now();
-    const samples: Sample[] = complete.map(sample => ({ elapsedSeconds: (sample.time - start) / 1000, durationMs: sample.durationMs, failed: sample.failed ?? false }));
-    const result = summarizeRun(samples, durationSeconds);
+    const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as K6Summary;
+    const result = accumulator.finish(summary, durationSeconds);
     const saved = await pool.query(
       'INSERT INTO test_runs (scenario, virtual_users, duration_seconds, pool_size, summary, series) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at, scenario, virtual_users, duration_seconds, pool_size, summary, series',
       ['product-lookup', virtualUsers, durationSeconds, pool.options.max, JSON.stringify(result.summary), JSON.stringify(result.series)],
