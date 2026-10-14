@@ -40,12 +40,12 @@ For the preferred local workflow, keep Node on your Mac and run PostgreSQL in Do
 
 ```sh
 npm install
-npm run dev       # API on port 4000 (requires PostgreSQL)
+npm run dev       # starts PostgreSQL in Docker, then the API on port 4000
 npm run dev:web   # dashboard in a second terminal
 npm test          # API unit tests
 ```
 
-Start just PostgreSQL with `docker compose up -d db`. The full `docker compose up --build` command also starts the API and dashboard in containers; do not run the host API on port 4000 at the same time as that stack.
+The full `docker compose up --build` command starts the API and dashboard in containers; do not run the host API on port 4000 at the same time as that stack. If you prefer to start the database separately, use `docker compose up -d db`.
 
 If the API reports that port 4000 is already in use on macOS, identify the listener with `lsof -nP -iTCP:4000 -sTCP:LISTEN` and stop that specific process with `kill <PID>`. If you need to keep it running, start the API on port 4001 and point the dashboard at it:
 
